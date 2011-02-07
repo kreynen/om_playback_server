@@ -1,0 +1,5 @@
+name = OM Playback Server Princeton
+description = Stores hooks for Telvue Princeton playback servers.
+package = Open Media System
+dependencies[] = om_playback_servers
+core = 6.x

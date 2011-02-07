@@ -1,0 +1,540 @@
+<?php
+// $Id: om_playback_servers.module,v 1.1.2.12 2011/01/19 13:59:23 kreynen Exp $
+
+/**
+ * Implementation of hook_node_info().
+ */
+function om_playback_servers_node_info() {
+  return array(
+    // Reservation nodes.
+    'om_playback_server' => array(
+      'name' => t('Playback Server'),
+      'module' => 'om_playback_servers',
+      'has_title' => TRUE,
+      'title_label' => 'Server Name',
+      'has_body' => FALSE,
+      'description' => t("<b>Open Media System</b> - This content type is used to register Playback servers."),
+    ),
+  );
+}
+
+/**
+ * Implementation of hook_form().
+ *
+ * Now it's time to describe the form for collecting the information
+ * specific to this node type. This hook requires us to return an array with
+ * a sub array containing information for each element in the form.
+ */
+function om_playback_servers_form(&$node, $form_state) {
+
+  $form['title'] = array(
+    '#title' => t('Server'),
+    '#type' => 'textfield',
+    '#title' => check_plain($type->title_label),
+    '#required' => TRUE,
+    '#default_value' => $node->title,
+    '#weight' => -5
+  );
+
+  return $form;
+}
+
+
+/**
+ * Implementation of hook_perm().
+ */
+
+function om_playback_servers_perm() {
+  return array('access playback servers');
+} // function om_playback_servers_perm
+
+/**
+ * Implementation of hook_help().
+ */
+
+function om_playback_servers_help($section) {
+  switch ($section) {
+    case 'admin/help#om_playback_servers':
+      return t('Stores sub-modules that contain hooks for all the playback servers.');
+      break;
+  }
+}
+
+// SETUP ADMINISTRTION AREA
+
+/**
+ * Implementation of hook_menu().
+ */
+ 
+function om_playback_servers_menu() {
+  
+  $items = array();
+  
+  $items['admin/openmedia'] = array(
+    'title' => 'Open Media System',
+    'description' => 'Administration and configuration options for Open Media System . ',
+    'position' => 'right',
+    'page callback' => 'system_admin_menu_block_page',
+    'access arguments' => array('administer Open Media System'),
+    'file' => 'system.admin.inc',
+    'file path' => drupal_get_path('module', 'system'),
+    'weight' => -20,
+  );
+  
+  $items['admin/openmedia/om-playback-servers'] = array(
+    'title' => 'Playback Server Configuration',
+    'description' => 'Configuration options for playback servers . ',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('om_playback_servers_admin_settings'),
+    'access arguments' => array('access playback servers'),
+    'type' => MENU_NORMAL_ITEM,
+  );
+  
+  return $items;
+  
+}
+
+/** 
+  * om_playback_servers_admin_settings()
+  * Build administration page for this module's settings.
+  * @returns form object
+  */
+
+function om_playback_servers_admin_settings() {
+  $form = array();
+  
+  $options = array();
+  
+  $servers = om_playback_servers_list();
+  
+  $channels = om_playback_servers_get_channel_taxonomy();
+  
+  //early configurations used om_feed, but most configurations use om_airing_feed
+  // @TODO: Cablecast only implementations don't require a feed at all
+  if (module_exists('om_airing_feed')) {
+    $feed_nodes = om_playback_servers_get_feed_nodes('om_airing_feed');
+  } 
+  else {
+    $feed_nodes = om_playback_servers_get_feed_nodes('om_feed');
+  }
+  
+  if ($channels) {
+    
+  }
+  else{
+    drupal_set_message(t('Your Drupal installation does not have a Channels vocabulary or no channels have been added. ') . l(t('Please create a vocabulary named "Channels" or at least one channel item.'), 'admin/content/taxonomy'));
+    return;
+  }
+  
+  foreach ($servers as $key => $value) {
+    $options[$key] = $value;
+  }
+  
+  $form['playback_server_info_markup_open'] = array(
+    '#value' => 'Associate servers with channels. <table><tr><th>Channel Number</th><th>Server Type</th><th>Feed</th></tr>'
+  );
+  
+  foreach ($channels AS $value) {
+    if (is_numeric($value->tid)) {
+      $form['table-row-open' . $value->tid] = array(
+        '#value' => '<tr>'
+      );
+    
+      $form['om_playback_servers_channel_' . $value->tid] = array(
+        '#value' =>  variable_get('om_playback_servers_channel_' . $value->name, $value->name),
+        '#prefix' => '<td>',
+        '#suffix' => '</td>',
+      );
+      
+      $form['om_playback_servers_server_type_' . $value->name] = array(
+        '#type' => 'select', 
+        '#default_value' => variable_get('om_playback_servers_server_type_' . $value->name, $value->name), 
+        '#options' => $options,
+        '#maxlength' => 128, 
+        '#required' => TRUE,
+        '#prefix' => '<td>',
+        '#suffix' => '</td>',
+      );
+      
+      $form['om_playback_servers_channel_feed_' . $value->name] = array(
+        '#type' => 'select', 
+        '#default_value' => variable_get('om_playback_servers_channel_feed_' . $value->name, $value->name), 
+        '#options' => $feed_nodes,
+        '#maxlength' => 128, 
+        '#required' => TRUE,
+        '#prefix' => '<td>',
+        '#suffix' => '</td>',
+      );
+      
+      $form['table-row-close' . $value->tid] = array(
+        '#value' => '</tr>'
+      );
+    } 
+  }
+  
+  $form['playback_server_info_markup_close'] = array(
+    '#value' => '</table>'
+  );
+  
+  $form['om_playback_servers_debug'] = array(
+    '#type' => 'checkbox',
+    '#title' => t('Run in Debug Mode'),
+    '#default_value' => variable_get('om_playback_servers_debug', 0),
+  );
+  
+  return system_settings_form($form);
+}
+
+/** 
+  * SERVER ACTION FUNCTIONS
+  *
+  * Tasks the playback servers could have to do. current actions are 'Add Airing', 'Remove Airing', 'Upadate 
+  * Airing'. These or any any additional functions should be defined in sub modules with 
+  * hook_get_server_functions().
+  *
+  */
+
+/**
+  * om_playback_servers_update_schedule($channel, $start, $end)
+  * Server agnostic function to update schedule with Feed API
+  * @param $channel channel number -- affiliated with server type TERM NAME NOT TID
+  * @param $start timestamp
+  * @param $end timestamp
+  * @returns server specific response (i.e. whatever the server module's action returns) Princeton is NULL
+  */
+  
+function om_playback_servers_update_schedule($channel, $start, $end) {
+  
+  $server_type = om_playback_servers_get_server_type($channel);
+  
+  $associated_feed = om_playback_servers_get_feed_node_associated_to_server($channel);
+  
+  $server_function_info = call_user_func($server_type . '_get_server_functions');
+  
+  $update_function = call_user_func($server_function_info['Update Airings'], $channel, $associated_feed, $start, $end);
+  
+  return $update_function;
+  
+}
+
+/**
+  * om_playback_servers_add_airing($channel, $airing_item)
+  * Server agnostic function to update schedule with Feed API
+  * @param $channel channel number -- affiliated with server type TERM NAME NOT TID
+  * @param $airing_item list of shows containing neccessary server specific scheduling information. 
+  *  ie. for Princetons this will be an array item with title, file name, duration, start, and end.
+  * @returns server specific response (i.e. whatever the server module's action returns) Princeton is NULL
+  */
+  
+function om_playback_servers_add_airings($channel, $airing_items = NULL) {
+  
+  $server_type = om_playback_servers_get_server_type($channel);
+  
+  $server_function_info = call_user_func($server_type . '_get_server_functions');
+  
+  $add_function = call_user_func($server_function_info['Add Airings'], $channel, $airing_items);
+  
+  return $add_function;
+  
+}
+
+/** 
+ * om_playback_servers_check_file_status($channel, $filename);
+ * Server agnostic function to check the status of a file. Checks for failed transfer. Only useful for servers
+ * with unmounted raids.
+ * $channel term name not tid
+ * $file name of the file
+ * returns boolean
+ */
+ 
+ function om_playback_servers_check_file_status($channel, $filename) {
+  
+  $server_type = om_playback_servers_get_server_type($channel);
+  
+  $server_function_info = call_user_func($server_type . '_get_server_functions');
+  
+  $file_status = call_user_func($server_function_info['Check File Status'], $channel, $filename);
+  
+  return $file_status;
+ 
+ }
+
+/**
+ * om_playback_servers_transfer_files($channel, $show_nid)
+ * Server agnostic function to transfer a file to a server's hot folder. This is for playback servers that
+ * do not allow drives to be directly mounted to the server. (i.e. servers that do, like Cablecast will have
+ * no use for this server action.
+ * @param $channel channel number -- affiliated with server type TERM NAME NOT TID
+ * @param $show_nid string, the show nid.
+ */
+
+function om_playback_servers_transfer_files($channel, $show_nid) {
+  
+  $server_type = om_playback_servers_get_server_type($channel);
+  
+  $server_function_info = call_user_func($server_type . '_get_server_functions');
+  
+  $file_transfer_status = call_user_func($server_function_info['Transfer File'], $channel, $show_nid);
+  
+  return $file_transfer_status;
+  
+}
+
+
+/**
+ * om_playback_servers_check_metadata_status($channel, $filename)
+ * Server agnostic function to check the status of metadata on a playback server. 
+ * @param $channel channel number -- affiliated with server type TERM NAME NOT TID
+ * @param $filename string, the filename to check.
+ * @returns string status
+ */
+ 
+function om_playback_servers_check_metadata_status($channel, $filename) {
+  
+  $server_type = om_playback_servers_get_server_type($channel);
+  
+  $server_function_info = call_user_func($server_type . '_get_server_functions');
+  
+  $meta_status = call_user_func($server_function_info['Check Metadata Status'], $channel, $filename);
+  
+  return $meta_status;
+}
+ 
+/**
+ * om_playback_servers_check_server_status($channel)
+ * Sever agnostic function to check server status. Checks server health not mount status.
+ * @param $channel term name not tid
+ * @returns string server status.
+ */
+ 
+function om_playback_servers_check_server_status($channel) {
+  
+  $server_type = om_playback_servers_get_server_type($channel);
+  
+  $server_function_info = call_user_func($server_type . '_get_server_functions');
+  
+  $server_status = call_user_func($server_function_info['Server Status'], $channel, $filename);
+  
+  return $server_status;
+}
+
+/**
+ * om_playback_servers_check_mount_status($channel)
+ * Server agnostic function to check server mount status. Only for servers that must be mounted.
+ * @param($channel)
+ * @return string mount status
+ */
+
+function om_playback_servers_check_mount_status($channel) {
+    
+  $server_type = om_playback_servers_get_server_type($channel);
+  
+  $server_function_info = call_user_func($server_type . '_get_server_functions');
+  
+  $server_status = call_user_func($server_function_info['Mount Status'], $channel, $filename);
+  
+  return $server_status;
+}
+
+/**
+ * om_playback_servers_remove_show($channel, $filename)
+ * Server agnostic function to remove contente from a playback server. The particulars of this will
+ * vary between systems. i.e. for Princetons this means deleting the metadata and the file from the sever hd.
+ * @param $channel
+ * @param $filename
+ * @return string result of procedure
+ */
+
+function om_playback_servers_delete_content($channel, $filename) {
+  
+  $server_type = om_playback_servers_get_server_type($channel);
+  
+  $server_function_info = call_user_func($server_type . '_get_server_functions');
+  
+  $result = call_user_func($server_function_info['Delete Content'], $channel, $filename);
+  
+  return $result;
+  
+}
+
+// UTILITY FUNCTIONS
+
+/**
+ * om_playback_servers_list 
+ * Return list of all playback servers based on module_invoke_all for hook_register_playback_servers;
+ * @returns $servers. List of servers and associated data as an array.
+ */
+
+function om_playback_servers_list() {
+  
+  $servers = module_invoke_all('register_playback_servers');
+  
+  return $servers;
+  
+}
+
+/**
+  * om_playback_servers_get_server_type($channel);
+  * Take channel and return server type (module)
+  * @param $channel channel
+  * @returns server type (module name)
+  */ 
+function om_playback_servers_get_server_type($channel) {
+  
+  $server_type = variable_get('om_playback_servers_server_type_' . $channel, NULL);
+  
+  return $server_type;
+  
+}
+
+/** 
+ * om_playback_servers_get_channel_taxonomy().
+ * Presuming you want to link your channels to a vocabulary named channels, return that list of taxononmy items.    
+ * Else return NULL
+ * as we don't have a fall back for now.
+ * @returns array of channel terms tid => title or NULL
+ */
+  
+function om_playback_servers_get_channel_taxonomy() {
+  
+  $taxonomy_query2 = db_query("SELECT vid FROM {vocabulary} AS voc WHERE voc.name = 'Channels'");
+  
+  while($row2 = db_fetch_array($taxonomy_query2)) {
+       $term_array = taxonomy_get_tree($row2['vid']);
+  }
+     
+  return !empty($term_array) ? $term_array : array();
+  
+}
+
+/**
+ * This function will return a vocabulary object which matches the
+ * given name. Will return null if no such vocabulary exists.
+ *
+ * @param String $vocabulary_name
+ *   This is the name of the section which is required
+ * @return Object
+ *   This is the vocabulary object with the name
+ *   or null if no such vocabulary exists
+ */
+function om_playback_servers_get_vocabulary_by_name($vocabulary_name) {
+  $vocabs = taxonomy_get_vocabularies(NULL);
+  foreach ($vocabs as $vocab_object) {
+    if ($vocab_object->name == $vocabulary_name) {
+      return $vocab_object;
+    }
+  }
+  return NULL;
+}
+
+   
+
+
+/** 
+  * om_playback_servers_get_channel_number_from_tid($tid).
+  * Send tid get term name.
+  * @param $tid int term id.
+  * @returns string term name.
+  */
+  
+function om_playback_servers_get_channel_number_from_tid($tid) {
+  
+  $term_title_query = db_query('SELECT name FROM {term_data} WHERE tid = %d', $tid);
+  
+  return db_result($term_title_query);
+
+}
+
+/** 
+  * om_playback_servers_get_tid_from_channel_number($tid).
+  * Reverse of the above
+  * @param string term name.
+  * @returns tid.
+  */
+  
+function om_playback_servers_get_tid_from_channel_number($term_name) {
+  
+  $term_tid_query = db_query('SELECT tid FROM {term_data} WHERE name = "%s"', $term_name);
+  
+  return db_result($term_tid_query);
+
+}
+  
+/** 
+  * om_playback_servers_get_feed_nodes($feed_type_name).
+  * Get all feed nodes of conten type $feed_type_name.
+  * @param $feed_type_name string title of feed content type.
+  * @returns array of channel terms tid => title or NULL
+  */
+  
+function om_playback_servers_get_feed_nodes($feed_type_name) {
+  
+  $feed_type_query = db_query('SELECT * FROM {node} WHERE type = "%s"', $feed_type_name);
+  
+  while ($row = db_fetch_array($feed_type_query)) {
+    $feed_nodes[$row['nid']] = $row['title'];
+  }
+  
+  return $feed_nodes;
+}
+
+/** 
+  * om_playback_servers_get_feed_node_associated_to_server($channel).
+  * Get the feed node associated with a channel via the admin area.
+  * @param $channel int channel number
+  * @returns $feed_item;
+  */
+
+function om_playback_servers_get_feed_node_associated_to_server($channel) {
+  
+  $feed_item = variable_get('om_playback_servers_channel_feed_' . $channel, NULL);
+  
+  return $feed_item;
+}
+
+/**
+  * om_playback_servers_get_server_info($channel_tid)
+  * Get data about server from server content type for given term relationship.
+  * @param $channel_tid tid of the channel
+  * @returns node object
+  */ 
+
+function om_playback_servers_get_server_info($channel_tid) {
+
+  if ($channel_tid == 'all') {
+    //return all servers
+    $result = db_query("SELECT * FROM {term_node} tn JOIN {node} n ON tn.vid = n.vid JOIN {content_type_om_playback_server} ON content_type_om_playback_server.vid = n.vid WHERE type = '%s'", 'om_playback_server');
+
+} 
+  else {
+    $result = db_query("SELECT * FROM {term_node} tn JOIN {node} n ON tn.vid = n.vid JOIN {content_type_om_playback_server} ON content_type_om_playback_server.vid = n.vid WHERE tid = %d and type = '%s'", $channel_tid, 'om_playback_server');
+  }
+  return db_fetch_object($result);
+}
+
+/**
+ * Implementation of hook_nodeapi
+ */
+
+function om_playback_servers_nodeapi($node, $op) {
+  if($node->type == 'om_show' && $op == 'view') {
+    $airing_items = array(
+      0 => array(
+        'nid' => $node->nid,
+        'title'    => $node->title,
+        'duration' => $node ->field_om_show_duration[0]['value'],
+        'start'    => NULL,
+        'end'      => NULL,
+        'filename' => $node->field_om_show_mpeg2[0]['filename'], 
+      )
+    );
+  }
+  $channels = om_playback_servers_get_channel_taxonomy();
+  foreach ($channels as $tid => $value) {
+    $type = om_playback_servers_get_server_type($tid);
+    if ($type == 'om_playback_servers_princeton') {
+      $server = om_playback_servers_get_server_info($tid);
+      om_playback_servers_princeton_add_show($airing_items, $server);
+    }
+  }
+}

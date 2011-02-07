@@ -1,0 +1,270 @@
+<?php
+// $Id$ 
+
+
+/** 
+  * DEFINITION FUNCTIONS
+  *
+  * Essential functions for interacting with om_playback_servers.module. This syntax must be maintained for
+  * everything to function properly.
+  *
+  */
+
+/** 
+ * Implementation of hook_register_playback_server().
+ * @returns server type (module name)
+ */
+
+function om_playback_servers_synergy_register_playback_servers() {
+  return array(
+    'om_playback_servers_synergy' => 'Synergy Server',
+  );
+}
+
+/**
+  * Implementation of hook_get_server_functions().
+  * @returns array of available server actions.
+  */
+
+function om_playback_servers_synergy_get_server_functions() {
+  return array(
+    'Add Airings' => 'om_playback_servers_synergy_add_airings',
+    'Remove Airings' => 'om_playback_servers_synergy_remove_airings',
+    'Update Airings' => 'om_playback_servers_synergy_update_airings',
+  );
+}
+
+/** 
+  * SERVER ACTION FUNCTIONS
+  *
+  * Tasks the playback servers could have to do current actions are 'Add Airing', 'Remove Airing', 'Upadate Airing'. These or any
+  * any additional functions should be defined above in om_playback_servers_synergy_get_server_functions().
+  *
+  */
+  
+/**
+  * om_playback_servers_synergy_update_airing($channel, $start, $associated_feed, $end)
+  * Princeton server's 'Update Airing' function. Use FeedAPI to update list of airings based on window. This is used in
+  * om_timeslot_scheduler (in the future) and om_timeslot_scheduler_autoschedule (in development).
+  * @param $channel int channel number.
+  * @param $associated_feed int associated feed nid.
+  * @param $start timestamp start.
+  * @param $end timestamp end.
+  * @returns NULL
+  */
+
+function om_playback_servers_synergy_update_airings($channel, $associated_feed, $start, $end) {
+  
+  // build base url: channel.domain.org
+  
+  $base_url = $_SERVER['HTTP_HOST'];
+  
+  if (preg_match('/www/', $base_url)) {
+    $uri = str_replace('www', $channel, $base_url);
+  }
+  else {
+    $uri = $channel . '.' . $base_url;
+  }
+  
+  /**
+  * Construct path argument or query string for date range (format should be YYYYMMDD Ymd  or YYYYMMDDHHMMSS YmdHis)
+  * At least documentation shows YYYYMMDDHHMMSS to be acceptible. However currently doesn't seem to work. I'm 
+  * experimenting in this area.
+  */
+  
+  $path_start = date('Ymd', $start . 'UTC');
+  $path_end = date('Ymd', ($end + (24*60*60)) . 'UTC'); 
+  
+  $path = 'id=1*AND*start=' . $path_start . '*AND*end=' . $path_end;
+  
+  $path = '/' . $path;
+  
+  $feed_url .= '/om_playback_servers_synergy/refactor/' . $uri . $path;
+  
+  $feed_node = node_load($associated_feed);
+  
+  $feed_node -> feed -> url = $feed_url;
+  
+  $feed_node -> feedapi_object -> nid = $feed_node -> nid;
+  $feed_node -> feedapi_object -> vid = $feed_node -> vid;
+  
+  feedapi_invoke('refresh', $feed_node->feedapi_object, FALSE);
+}
+
+/**
+  * om_playback_servers_synergy_add_airing($channel, $airing_items)
+  * Princeton server's 'Add Airings' function. Use FeedAPI to update list of airings based on window. This is used in
+  * om_timeslot_scheduler (in the future) and om_timeslot_scheduler_autoschedule (in development).
+  * @param $channel int channel number.
+  * @param $airing_items list of airing items expects an array with title, filename, start, end, and duration.
+     format: [0] => 'vid'      =>  show vid,
+                    'title'    => 'show title',
+                    'duration' =>  seconds,
+                    'start'    => 'timestamp',
+                    'end'      => 'timestamp,
+             [1] => ...
+  * @returns NULL
+  */
+
+function om_playback_servers_synergy_add_airings($channel, $airing_items) {
+     
+     $channel_tid = om_playback_servers_get_tid_from_channel_number($channel);
+     $server = om_playback_servers_get_server_info($channel_tid);
+     
+     // Stuff that needs to happen iteratively
+     
+for ($s = 0; $s < count($airing_items); $s++) {
+     
+     // Convert back to + timezone diff (for us +0600 for db storage
+     $utc_value = gmstrftime("%Y-%m-%d-%H:%M:%S", $airing_items[$s]['start']);
+     $utc_value2 = gmstrftime("%Y-%m-%d-%H:%M:%S", $airing_items[$s]['end']);
+     
+     
+     $tempnode = new stdClass();
+     $tempnode->type = 'om_airing'; 
+     $tempnode->title = 'temp - ' . $utc_value . ' - ' . $airing_items[$s]['title'];
+     $tempnode->uid = 1;             
+     $tempnode->status = 0;          
+     $tempnode->body = 'actual content';
+     $tempnode->format = 1;
+     $tempnode->field_om_show_nid = array(
+      0 => array(
+      'value' => $airing_items[$s]['vid'],
+      ),
+    );
+    
+    $tempnode->field_om_airing_mpeg2 = array(
+      0 => array(
+      'value' => $airing_items[$s]['filename'],
+      ),
+    );
+    
+    
+    $tempnode->field_om_airing_date  = array( 
+      0 => array(
+      'value' => $utc_value,
+      'value2' => $utc_value2,
+     ),
+   );
+   
+   
+   $tempnode->og_groups = array($airing_items[$s]['vid'] =>  $airing_items[$s]['vid']);
+   
+   $tempnode->og_groups_both = array($airing_items[$s]['vid'] =>  $airing_items[$s]['title']);
+   
+   //get temp airing to send along with csv out (if using Princeton, see note below *)
+   
+   $temp_airing = node_save($tempnode);
+   
+   $temp_airing_nid_query = 'SELECT nid FROM {node} WHERE title = "%s" AND type = "om_airing"';
+   
+   $temp_airing_nid = db_result(db_query($temp_airing_nid_query, $tempnode->title));
+   
+   $term = array( 
+      0 => $channel,
+    );
+    
+   taxonomy_node_save($tempnode, $term);
+   
+   $node = node_load($airing_items[$s]['vid']);
+   
+   //Last step... if there are no errors, mark the om_show as aired
+   $node->field_om_show_aired = array(
+      0 => array(
+      'value' => 1,
+      ),
+    );
+    
+   node_save($node);
+   
+   // Create CSV rows to be united with header below.
+   
+     $csv_rows .= "1," . date('m-d-Y', $airing_items[$s]['start']) . "," . date('H:i:s', $airing_items[$s]['start']) . ",PLAYOUT,," . $airing_items[$s]['filename'] . ",0.0," . $airing_items[$s]['duration'] . ",,,,,,,,,,,,,TRUE,TRUE,,,,,,,,,,.0\n";
+   
+
+/* SOAP Section from om_timeslot_scheduler_princeton */
+
+    $program_code = $airing_items[$s]['vid'];
+    $program = $airing_items[$s]['title'];
+    //$episode = 'S' . $node->field_om_show_season[0]['value'] . 'E' . $node->field_om_show_episode_number[0]['value'];
+    //$episode_code = 'S' . $node->field_om_show_season[0]['value'] . 'E' . $node->field_om_show_episode_number[0]['value'];
+    $description = $temp_airing_nid; 
+    $delete_datetime = date('Y-m-d g:i P', time() + (30 * 24 * 60 * 60)); 
+    $ingest_datetime = date('Y-m-d g:i P', time());
+    $expected_duration = $airing_items[$s]['duration'];
+    $expected_filename = $airing_items[$s]['filename'];
+    $contributor = 'soap';  //This should be variable
+    $location = 'DOM';  //This should be variable
+    $username = 'soap';  //This should be variable
+
+try {
+     $service = new SoapClient('http://' . $servers->field_om_timeslot_server_uri_value . ':3000/program_service/wsdl');
+ 
+     $result = $service->AddProgram(
+       new SoapVar('<value xsi:nil="true" />', XSD_ANYXML),
+       $program,
+       $episode,
+       new SoapVar('<value xsi:nil="true" />', XSD_ANYXML),
+       $description,
+       $delete_datetime,
+       $ingest_datetime,
+       $expected_duration, 
+       $expected_filename,
+       $contributor,
+       $location,
+       $username
+     );
+     if ($result[0] == 'SUCCEEDED') {
+       $output .= t('File successfully transfer to ' . $servers->title);
+     } 
+     else {
+       $output .= t('<p>Failed. <strong>') . $result[1] . t('</strong></p>');
+     }
+   } catch (SoapFault $fault) {
+    trigger_error(
+     "SOAP Fault: (faultcode: {$fault->faultcode}, faultstring: {$fault->faultstring})", E_USER_ERROR);
+  } // try
+
+}//end for
+  // Stuff that only needs top happen once
+  
+  $csv_header = om_playback_servers_synergy_csv_header();
+  $csv = $csv_header . $csv_rows;
+  
+  $path = $server->field_om_timeslot_server_mount_value . '/import/native';
+  
+  $myFile = $path . '/om_timeslot_scheduler_' . time() . '.csv';
+  $output = $output . 'Schedule file written to ' . $myFile;
+  $fh = fopen($myFile, 'w') or die("can't open file: " . $myFile);
+  fwrite($fh, $csv);
+  fclose($fh);
+
+}
+ 
+
+/**
+  * om_playback_servers_synergy_add_seconds($timestamp, $duration).
+  * Create refactored date field with seconds(duration of airing) added.
+  * @param $timestamp timestamp to which seconds will be added.
+  * @param $duration int duration in seconds.
+  * @return date string.
+  */
+
+function om_playback_servers_synergy_add_seconds($timestamp, $duration) {
+
+  $date_time_array = getdate($timestamp);
+
+  $hours = $date_time_array['hours'];
+  $minutes = $date_time_array['minutes'];
+  $seconds = ($date_time_array['seconds'] + $duration);
+  $month = $date_time_array['mon'];
+  $day = $date_time_array['mday'];
+  $year = $date_time_array['year'];
+
+  // use mktime to recreate the unix timestamp
+  $timestamp = mktime($hours, $minutes, $seconds, $month, $day, $year);
+  //Fri, 31 Oct 2008 01:28:52 -0600
+  return date("D, j M Y H:i:s", $timestamp);
+
+}
+

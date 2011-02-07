@@ -1,0 +1,702 @@
+<?php
+// $Id: om_playback_servers_princeton.module,v 1.1.2.12 2011/01/19 14:10:28 kreynen Exp $ 
+
+/**
+ * Implementation of hook_perm().
+ */
+
+function om_playback_servers_princeton_perm() {
+  return array('access content', 'administer Open Media System');
+} // function om_timeslot_pairings_perm
+
+/**
+  * Implementation of hook_menu().
+  * $returns array of menu items.
+  */
+
+function om_playback_servers_princeton_menu() {
+  $items = array();
+  
+  $items['om_playback_servers_princeton/refactor'] = array(
+    'title' => 'Refactored RSS',
+    'description' => 'Takes uri and returns refactored rss',
+    'page callback' => 'om_playback_servers_princeton_refactor_feed',
+    'page arguments' => array(2, 3, 5 ),
+    'access callback' => TRUE,
+    'type' => MENU_CALLBACK,
+  );
+  
+  return $items;
+}
+
+/** 
+  * DEFINITION FUNCTIONS
+  *
+  * Essential functions for interacting with om_playback_servers.module. This syntax must be maintained for
+  * everything to function properly.
+  *
+  */
+
+/** 
+ * Implementation of hook_register_playback_server().
+ * @returns server type (module name)
+ */
+
+function om_playback_servers_princeton_register_playback_servers() {
+  return array(
+    'om_playback_servers_princeton' => 'Telvue Princeton Server',
+  );
+}
+
+/**
+  * Implementation of hook_get_server_functions().
+  * @returns array of available server actions.
+  */
+
+function om_playback_servers_princeton_get_server_functions() {
+  return array(
+    'Add Airings' => 'om_playback_servers_princeton_add_airings',
+    'Remove Airings' => 'om_playback_servers_princeton_remove_airings',
+    'Update Airings' => 'om_playback_servers_princeton_update_airings',
+    'Check Metadata Status' => 'om_playback_servers_princeton_check_metadata_status',
+    'Transfer File' => 'om_playback_servers_princeton_transfer_file',
+    'Server Status' => 'om_playback_servers_princeton_check_server_status',
+    'Mount Status' => 'om_playback_servers_princeton_check_mount_status',
+    'Check File Status' => 'om_playback_servers_princeton_check_file_status',
+    'Delete Content' => 'om_playback_servers_princeton_delete_content',
+    
+  );
+}
+
+/** 
+  * SERVER ACTION FUNCTIONS
+  *
+  * Tasks the playback servers could have to do current actions are 'Add Airing', 'Remove Airing', 'Upadate Airing'. These or any
+  * any additional functions should be defined above in om_playback_servers_princeton_get_server_functions().
+  *
+  */
+  
+/**
+  * om_playback_servers_princeton_update_airing($channel, $start, $associated_feed, $end)
+  * Princeton server's 'Update Airing' function. Use FeedAPI to update list of airings based on window. This is used in
+  * om_timeslot_scheduler (in the future) and om_timeslot_scheduler_autoschedule (in development).
+  * @param $channel int channel number.
+  * @param $associated_feed int associated feed nid.
+  * @param $start timestamp start.
+  * @param $end timestamp end.
+  * @returns NULL
+  */
+
+function om_playback_servers_princeton_update_airings($channel, $associated_feed, $start, $end) {
+  
+  // build base url: channel.domain.org
+  
+  $base_url = $_SERVER['HTTP_HOST'];
+  
+  if (preg_match('/www/', $base_url)) {
+    $uri = str_replace('www', $channel, $base_url);
+  }
+  else {
+    $uri = $channel . '.' . $base_url;
+  }
+  
+  /**
+  * Construct path argument or query string for date range (format should be YYYYMMDD Ymd  or YYYYMMDDHHMMSS YmdHis)
+  * At least documentation shows YYYYMMDDHHMMSS to be acceptible. However currently doesn't seem to work. I'm 
+  * experimenting in this area.
+  */
+  
+  $path_start = date('Ymd', $start . 'UTC');
+  $path_end = date('Ymd', ($end + (24*60*60)) . 'UTC'); 
+  
+  $path = 'id=1*AND*start=' . $path_start . '*AND*end=' . $path_end;
+  
+  $path = '/' . $path;
+  
+  // @TODO: fix absolute path
+  $feed_url .= '/om_playback_servers_princeton/refactor/' . $uri . $path;
+  
+  $feed_node = node_load($associated_feed);
+  
+  $feed_node -> feed -> url = $feed_url;
+  
+  $feed_node -> feedapi_object -> nid = $feed_node -> nid;
+  $feed_node -> feedapi_object -> vid = $feed_node -> vid;
+  
+  feedapi_invoke('refresh', $feed_node->feedapi_object, FALSE);
+}
+
+/**
+  * om_playback_servers_princeton_add_airings($channel, $airing_items)
+  * Princeton server's 'Add Airings' function. Use FeedAPI to update list of airings based on window. This is used in
+  * om_timeslot_scheduler (in the future) and om_timeslot_scheduler_autoschedule (in development).
+  * @param $channel int channel number.
+  * @param $airing_items list of airing items expects an array with title, filename, start, end, and duration.
+     format: [0] => 'nid'      =>  show nid,
+                    'title'    => 'show title',
+                    'duration' =>  seconds,
+                    'start'    => 'timestamp',
+                    'end'      => 'timestamp,
+                    'filename' => 'file name',
+             [1] => ...
+  * @returns NULL
+  */
+
+function om_playback_servers_princeton_add_airings($channel, $airing_items) {
+   
+   $channel_tid = om_playback_servers_get_tid_from_channel_number($channel);
+   $server = om_playback_servers_get_server_info($channel_tid);
+   $output .= om_playback_servers_princeton_add_temp_airing($airing_items, $channel_tid);
+   
+   $output .= om_playback_servers_princeton_schedule_shows($airing_items, $server);
+   
+   return $output;
+}
+
+/**
+ * om_playack_servers_princeton_check_mount_status($channel)
+ * Princton's mount check function.
+ * @param $channel number not name
+ * @return server mount status boolean
+ */
+
+function om_playback_servers_princeton_check_mount_status($channel) {
+  
+  $channel_tid = om_playback_servers_get_tid_from_channel_number($channel);
+  $server = om_playback_servers_get_server_info($channel_tid);
+  
+  if(is_dir($server->field_om_playback_server_mount_value . '/import/pbcore')){
+    return TRUE;
+  } else {
+    return FALSE;
+  }
+}
+
+/**
+ * om_playback_servers_princeton_check_server_status($channel)
+ * Princeton's get server status function.
+ * @param $channel channel number name not tid.
+ * @return string server status message
+ */
+
+function om_playback_servers_princeton_check_server_status($channel) {
+  
+  $channel_tid = om_playback_servers_get_tid_from_channel_number($channel);
+  $server = om_playback_servers_get_server_info($channel_tid);
+  
+  $url = 'http://' . $server->field_om_playback_server_uri_value . ':3000/system_health/rss';
+  
+  $health = simplexml_load_file($url);
+  
+  $namespaceurl = 'http://' . $timeslot_server->field_om_playback_server_uri_value . ':3000/psg_namespace/';
+  
+  $status .= $health->channel->title . '<br />';
+  foreach ($health->channel->item as $item) {
+    $status .= $item -> title . ' --- ';
+    $status .= 'Status: ' . $item->children('psg', true)->status. '   ';
+    $status .= ' Message: ' . $item->children('psg', true)->message . '   ';
+    $status .= ' Last Check: ' . $item->children('psg', true)->last_check . '  ';
+    $status .= ' Next Check: ' . $item->children('psg', true)->next_check . '   <br />';
+  }
+  return $status;
+}
+
+/**
+ * om_playback_servers_princeton_check_metadata_status($channel, $filename)
+ * OPS Princeton's check metadata status function. See if the show exists in the server db.
+ * @param $channel channel number not tid.
+ * @param $filename string file name to check.
+ * @return status of metadata string in xml.
+ */
+function om_playback_servers_princeton_check_metadata_status($server, $filename) {
+  //$channel_tid = om_playback_servers_get_tid_from_channel_number($channel);
+  //$server = om_playback_servers_get_server_info($channel_tid);
+  
+  $rest_meta_check = 'http://' . $server->field_om_playback_server_uri['0']['value'] . ':3000/content_metadata_by_filename/' . $filename;
+  
+  //dsm($rest_meta_check);
+  
+  $content_metadata = simplexml_load_file($rest_meta_check);
+  
+  //print_r($content_metadata);
+  
+  if($content_metadata->error){
+    //dsm($content_metadata->error);
+    return FALSE;
+  } else {
+    return TRUE;
+  }
+  
+  //return $content_metadata;
+  
+}
+
+/**
+ * om_playback_servers_princeton_transfer_file($channel, $shownid)
+ * OPS Princeton's transfer file function. Transfer file from your archive to hot folder. Implements 
+ * om_playback_servers_princeton_check_metadata_status() to decide whether or not to call 
+ * om_playback_servers_princeton_add_show().
+ * @param $channel channel number not tid
+ * @param $shownid nid of the show, containing the file to be transfered (perhaps just filename in the future)
+ */
+
+function om_playback_servers_princeton_transfer_file($channel, $shownid) {
+  
+  $show_node = node_load($shownid);
+  
+  // @TODO add check so this works with both file and path configurations.
+  //$filename = $show_node->field_om_show_mpeg2[0]['filename'];
+  //$filepath = $show_node->field_om_show_mpeg2[0]['filepath'];
+  
+  $filename = $show_node->field_om_show_mpeg2[0]['filename'];
+  $filepath = $show_node->field_om_show_mpeg2[0]['filepath'];
+  
+  $channel_tid = om_playback_servers_get_tid_from_channel_number($channel);
+  $server = om_playback_servers_get_server_info($channel_tid);
+  
+  $importpath = $server->field_om_playback_server_mount_value . '/import/media/';
+  
+  if(om_playback_servers_princeton_check_metadata_status($channel, $filename)) {
+    // metadata already exists on server
+    // @TODO check file status before atempting to transfer.
+    
+    //$output .= '<ol><li>Meta data was confirmed for ' . $filename . '</li> <li>Attempting to transfer ' . $filename . ' to ' . $importpath . '</li></ol>';
+    
+    //watchdog('om_timeslot_princeton', 'Attempting to cp ' . $filetomove . ' to ' . $importpath . $filename);
+    //exec('cp ' . $filepath . ' ' . $importpath . $filename);
+    
+  }
+  else {
+    // metadata does not exist on server
+    
+    // @TODO again check file status here
+        
+    $add_show_array = array(
+      0 => array(
+        'nid' => $show_node-> nid,
+        'title' => $show_node-> title,
+        'duration' => $show_node-> field_om_show_duration[0]['value'],
+        'filename' => $filename
+      )
+    );
+    
+    $results = om_playback_servers_princeton_add_show($add_show_array, $server);
+    
+    $output .= '<ol><li>Meta data was not found for ' . $filename . '. Attempting to transfer now. Results if any: </li>';
+    $output .= $results;
+    
+    if (om_playback_servers_princeton_check_metadata_status($channel, $filename)) {
+      
+      //watchdog('om_timeslot_princeton', 'Attempting to cp ' . $filetomove . ' to ' . $importpath . $filename);
+      //exec('cp ' . $filepath . ' ' . $importpath . $filename);
+      //$output .= '<li>Attempting transfe of ' . $filename . ' to ' . $importpath . '</li></ol>';
+    }
+    else {
+      $output .= '<li>Metadata transfer failed. File was not transferred. Please contact station staff.</li></ol>';
+    }
+  }
+ 
+  return $output;
+ 
+}
+
+/**
+ * om_playback_servers_princeton_check_file_status($channel, $filename)
+ * Princetons' check file status function. Check to see if file exists in the failed files folder.
+ * @param $channel channel number
+ * @param $filename file name
+ * @return boolean
+ */
+ 
+ function om_playback_servers_princeton_check_file_status($server, $filename) {
+  
+  //$channel_tid = om_playback_servers_get_tid_from_channel_number($channel);
+  //$server = om_playback_servers_get_server_info($channel_tid);
+  
+  $failed_files_folder = $server->field_om_playback_server_mount_value . '/import/failed/' . $filename;
+  
+  return file_exists($failed_files_folder) ? FALSE : TRUE;
+  
+ }
+
+
+/**
+ * om_playback_servers_princeton_delete_content($channel, $filename);
+ * Princetons' delete content function. Removes meta data and deletes show from hard drive.
+ * @param $channel channel number
+ * @param $filename file name
+ * @return string result
+ */
+ 
+function om_playback_servers_princeton_delete_content($channel, $filename) {
+  
+  $channel_tid = om_playback_servers_get_tid_from_channel_number($channel);
+  $server = om_playback_servers_get_server_info($channel_tid);
+  
+  $meta_data = om_playback_servers_princeton_check_metadata_status($channel, $filename);
+  
+  
+  if (!$meta_data) {
+    return 'This file does not seem to have metadata on channel ' . $channel;
+  }
+  
+  $program_id = $meta_data->id;
+  
+  foreach($program_id AS $i => $value) {
+    $program_id = $value;
+  }
+  
+  $client = new SoapClient('http://' .  $server->field_om_playback_server_mount_value . ':3000/program_service/wsdl');
+  
+  $soap_result = $client->__soapCall("DeleteProgram", array($program_id, $username));
+  
+  return $soap_result;
+  
+}
+ 
+
+/**
+ * SERVER SPECIFIC FUNCTIONS
+ * Functions that are called by server action functions, but are more specific than general utility functions
+ * kept in main module (?).
+ */
+  
+/**
+ * om_playback_servers_princeton_add_show($airing_items, $server)
+ * Send metadata via soap for a given show list. List must be properly formatted! Called in hook_nodeapi by default.
+ * @param $airing_items array() see add_airing
+ * @param $server server node object.
+ * @returns string error
+ */
+  
+function om_playback_servers_princeton_add_show($airing_items, $server) {
+  
+  for ($s = 0; $s < count($airing_items); $s++ ) {
+    /* SOAP Section from om_timeslot_scheduler_princeton */
+    
+    $program_code = $airing_items[$s]['nid'];
+    $program = $airing_items[$s]['title'];
+    //$episode = 'S' . $node->field_om_show_season[0]['value'] . 'E' . $node->field_om_show_episode_number[0]['value'];
+    //$episode_code = 'S' . $node->field_om_show_season[0]['value'] . 'E' . $node->field_om_show_episode_number[0]['value'];
+    $delete_datetime = date('Y-m-d g:i P', time() + (30 * 24 * 60 * 60)); 
+    $ingest_datetime = date('Y-m-d g:i P', time());
+    $expected_duration = $airing_items[$s]['duration'];
+    $expected_filename = $airing_items[$s]['filename'];
+    $contributor = 'soap';  //This should be variable
+    $location = 'DOM';  //This should be variable
+    $username = 'soap';  //This should be variable
+    
+    try {
+       
+       $service = new SoapClient('http://' . $server->field_om_playback_server_uri[0]['value'] . ':3000/program_service/wsdl');
+       
+       $result = $service->AddProgram(
+         new SoapVar('<value xsi:nil="true" />', XSD_ANYXML),
+         $program,
+         $episode,
+         new SoapVar('<value xsi:nil="true" />', XSD_ANYXML),
+         new SoapVar('<value xsi:nil="true" />', XSD_ANYXML),
+         $delete_datetime,
+         $ingest_datetime,
+         $expected_duration, 
+         $expected_filename,
+         $contributor,
+         $location,
+         $username
+       );
+       if ($result[0] == 'SUCCEEDED') {
+         $output .= t('Metadata successfully transfer to ' . $server->title) . '.<br />';
+       } 
+       else {
+         $output .= t('<p>Failed. <strong>') . $result[1] . t('</strong></p>');
+       }
+    } // end try
+    catch (SoapFault $fault) {
+     trigger_error(
+       "The following SOAP Error was generated, SOAP Fault: (faultcode: {$fault->faultcode}, faultstring: {$fault->faultstring})", E_USER_ERROR);
+    }// catch
+  }
+  return $output;
+}
+
+/**
+ * om_playback_servers_princeton_add_temp_airing($airing_items)
+ * Add temp airing node to prevent scheduing conflicts.
+ * @param array of properly formated shows see add_airing
+ */
+function om_playback_servers_princeton_add_temp_airing($airing_items, $channel_tid) {
+  
+  for ($s = 0; $s < count($airing_items); $s++) {
+    
+    // Convert back to + timezone diff (for us +0600 for db storage
+    $utc_value = gmstrftime("%Y-%m-%d-%H:%M:%S", $airing_items[$s]['start']);
+    $utc_value2 = gmstrftime("%Y-%m-%d-%H:%M:%S", $airing_items[$s]['end']);
+    
+    $tempnode = new stdClass();
+    $tempnode->type = 'om_airing'; 
+    $tempnode->title = 'temp - ' . $utc_value . ' - ' . $airing_items[$s]['title'];
+    $tempnode->uid = 1;
+    $tempnode->status = 0;
+    $tempnode->body = 'actual content';
+    $tempnode->format = 1;
+    $tempnode->field_om_airing_pid = array(
+       0 => array(
+         'nid' => $airing_items[$s]['nid']
+       ),
+    );
+    $tempnode->field_om_show_nid = array(
+       0 => array(
+         'value' => $airing_items[$s]['vid'],
+       ),
+    );
+    
+    $tempnode->field_om_airing_mpeg2 = array(
+      0 => array(
+      'value' => $airing_items[$s]['filename'],
+      ),
+    );
+    
+    
+    $tempnode->field_om_airing_date  = array( 
+      0 => array(
+      'value' => $utc_value,
+      'value2' => $utc_value2,
+     ),
+   );
+   
+   
+   $tempnode->og_groups = array($airing_items[$s]['nid'] =>  $airing_items[$s]['nid']);
+   
+   $tempnode->og_groups_both = array($airing_items[$s]['nid'] =>  $airing_items[$s]['title']);
+   
+   //get temp airing to send along with csv out (if using Princeton, see note below *)
+   
+   node_save($tempnode);
+   
+   // @TODO: What was this $temp_airing_nid_query used for?
+   
+   //$temp_airing_nid_query = 'SELECT nid FROM {node} WHERE title = "%s" AND type = "om_airing" ORDER BY created Limit 0, 1';
+   
+   //$temp_airing_nid = db_result(db_query($temp_airing_nid_query, $tempnode->title));
+   
+   
+   $term = array( 
+      0 => $channel_tid,
+    );
+    
+   taxonomy_node_save($tempnode, $term);
+   
+   $show_node = node_load($airing_items[$s]['nid']);
+   
+   //Last step... if there are no errors, mark the om_show as aired
+   $show_node->field_om_show_aired = array(
+      0 => array(
+      'value' => 1,
+      ),
+    );
+    
+   node_save($show_node);
+   
+  
+  }//end for
+}
+
+/**
+ * om_playback_servers_princeton_schedule_shows($airing_items, $server)
+ * Schedule shows with REST api.
+ * @airing_items Properly formatted list of shows see add_airing
+ * @server Server node object
+ */
+
+function om_playback_servers_princeton_schedule_shows($airing_items, $server) {
+  
+  //$output .= om_playback_servers_princeton_add_show($airing_items, $server);
+ 
+  // Required CSV header... added by princeton_remote.php
+  $csv_header = "Output,Date,Time,Type,Source ID,Source Name,Offset,Duration,Output Name,Program Code,Episode Code,Program,Title,Episode,Description,Preroll,Postroll,OSD,OSD Path,OSD File,Include In Guide,Track Content Attributes,Overlay Alpha Blend,Overlay Chroma Key,Overlay X Coordinate,Overlay Y Coordinate,Overlay Width,Overlay Height,Program Number,Switch Command\n";
+  
+  for ($y = 0; $y < count($airing_items); $y ++) {
+    
+    $csv_row = "1," . date('m-d-Y', $airing_items[$y]['start']) . "," . date('H:i:s', $airing_items[$y]['start']) . ",PLAYOUT,," . $airing_items[$y]['filename'] . ",0.0," . $airing_items[$y]['duration'] . ".0\n";
+    
+    //If using remote, pass the csv off to middleman server
+    if ($server->field_om_playback_server_remote['0']['value']) {
+      if (variable_get('om_playback_servers_debug', 0)) {
+        $output .= 'Debug: ' . $server->field_om_playback_server_remote['0']['value'] . '?nid=' . $node->nid . '&csv=' . urlencode($csv_row);
+      } else {
+        $return = file_get_contents($server->field_om_playback_server_remote['0']['value'] . '?nid=' . $node->nid . '&csv=' . urlencode($csv_row));
+        watchdog('om_playback_server', 'Passed CSV to Remote: ' . $return);
+        $output .= t('Scheduling information sent.') . '<br />';
+      }
+    } else {
+      $csv_rows .= $csv_row;
+    } 
+  }
+  
+  if(!$server->field_om_playback_server_remote['0']['value']){
+    
+    $csv = $csv_header . $csv_rows;
+  
+    $path = $server->field_om_playback_server_mount_value . '/import/native';
+  
+    $myFile = $path . '/om_timeslot_scheduler_' . time() . '.csv';
+    $output .= 'Schedule file written to ' . $myFile;
+  
+    //if running in debug, write csv to screen
+    if (variable_get('om_playback_servers_debug', 0)) {
+      $output .= $csv;
+    } 
+    else {
+      $fh = fopen($myFile, 'w') or die("can't open file: " . $myFile);
+      fwrite($fh, $csv);
+      fclose($fh);
+    }
+  }
+  
+  return $output;
+}
+  
+/**
+ * om_playback_servers_princeton_refactor_feed($uri, $path, $debug).
+ * Remaps Princeton's RSS to use psg:eventId as guid.
+ * @params $uri string server uri
+ * @params $path string additional query information with Drupal safe query entities.
+ * @params $debug boolean mode.
+ * @returns printed out string of refactored RSS.
+ */
+
+function om_playback_servers_princeton_refactor_feed($uri, $path = NULL, $debug = FALSE) {
+  
+  $GLOBALS['conf']['cache'] = FALSE;
+  
+  if ($debug) {
+  
+  $output .= "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n";
+  $output .= "<rss version=\"2.0\" xmlns:psg=\"http://" . $uri . ":3000/psg_namespace/\">\n";
+  $output .= "<channel>\n";
+  $output .= "<title>debug feed</title>\n";
+  $output .= "<description>testing 1,2,3</description>\n";
+  
+  $output .=  "<item>\n";
+  $output .=  "<title>test item</title>\n";
+  
+  $output .= "<pubDate>Sat, 07 Sep 2002 00:00:01 GMT</pubDate>\n";
+  $output .= "<startDate>Sat, 07 Sep 2002 00:00:01 +200</startDate>\n";
+  $output .= "<endDate>Sat, 07 Sep 2002 00:01:01 +200</endDate>\n";
+  $output .= "<description>item description</description>\n";
+  $output .= "<duration>123</duration>\n";
+  $output .= "<guid isPermaLink='false'>123</guid>\n";
+  $output .= "<filepath>test.mpg</filepath>\n";
+  $output .= "<link>123-test.mpg</link>\n";
+  $output .= "</item>\n";
+  $output .= "</channel>\n";
+  $output .= '</rss>';
+  
+  }
+  else {
+    if ($path) {
+      $path = str_replace('*AND*', '&', $path);
+      $path = '?' . $path;
+      $url = 'http://' . $uri . ':3000/xml/rss2/' . $path;
+    } 
+    else {
+      //default 
+      $url = 'http://' . $uri . ':3000/xml/rss2';
+    }
+  
+  $rss = simplexml_load_file($url);
+  
+  $namespaceurl = 'http://' . $uri . ':3000/psg_namespace/';
+  if ($rss) {
+    
+    $output .= "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n";
+    $output .= "<rss version=\"2.0\" xmlns:psg=\"http://" . $uri . ":3000/psg_namespace/\">\n";
+    $output .= "<channel>\n";
+    $output .= "<title>" . htmlentities($rss->channel->title) . "</title>\n";
+    $output .= "<description>" . htmlentities($rss->channel->title) . "</description>\n";
+      
+      foreach ($rss->channel->item as $item) {
+        
+        $ns_dc = $item->children($namespaceurl); 
+        
+        $title_parts = explode(" - ", $item->title);
+        $title = $title_parts[0];
+        
+        $date_parts = explode(" +", $item->pubDate);
+        $date_no_offset = $date_parts[0];
+        
+        $output .=  "<item>\n";
+        $output .=  "<title>" . om_playback_servers_princeton_feed_clean_string($title) . "</title>\n";
+        
+        //All date-times in RSS should conform to the Date and Time Specification of RFC 822 - Sat, 07 Sep 2002 00:00:01 GMT
+        $RFC832_date = date("D, j M Y h:i:s", strtotime($item->pubDate));   
+        
+        $output .= "<pubDate>" . $RFC832_date . ' GMT' . "</pubDate>\n";
+        $output .= "<startDate>" . $date_no_offset . "</startDate>\n";
+        $output .= "<endDate>" . om_playback_servers_princeton_add_seconds(strtotime($date_no_offset), $item->duration) . "</endDate>\n";
+        $output .= "<description>" . om_playback_servers_princeton_feed_clean_string($item->description) . "</description>\n";
+        $output .= "<duration>" . $item->duration . "</duration>\n";
+        $output .= "<guid isPermaLink='false'>" . $ns_dc->eventId . "</guid>\n";
+        $output .= "<filepath>" . str_replace('#', '', htmlentities($item->guid, HTML_ENTITIES, 'UTF-8')) . "</filepath>\n";  
+        
+        if (strlen($item->guid)) {
+        $output .= "<link>" . $ns_dc->eventId . '-' . str_replace('#', '', htmlentities($item->guid, HTML_ENTITIES, 'UTF-8')) . "</link>\n";
+        }
+        else {
+          $output .= "<link>" . $ns_dc->eventId . "-live.mpg</link>\n";
+        }
+          $output .= "</item>\n";
+        }
+      
+      $output .= "</channel>\n";
+      $output .= '</rss>';
+    }
+    else {
+      $output .= 'Could not connect to ' . $url; 
+    }
+  }
+  
+  header("Content-type: text/xml"); 
+  
+  print $output;
+  
+}
+
+/**
+  * om_playback_servers_princeton_add_seconds($timestamp, $duration).
+  * Create refactored date field with seconds(duration of airing) added.
+  * @param $timestamp timestamp to which seconds will be added.
+  * @param $duration int duration in seconds.
+  * @return date string.
+  */
+
+function om_playback_servers_princeton_add_seconds($timestamp, $duration) {
+
+  $date_time_array = getdate($timestamp);
+
+  $hours = $date_time_array['hours'];
+  $minutes = $date_time_array['minutes'];
+  $seconds = ($date_time_array['seconds'] + $duration);
+  $month = $date_time_array['mon'];
+  $day = $date_time_array['mday'];
+  $year = $date_time_array['year'];
+
+  // use mktime to recreate the unix timestamp
+  $timestamp = mktime($hours, $minutes, $seconds, $month, $day, $year);
+  //Fri, 31 Oct 2008 01:28:52 -0600
+  return date("D, j M Y H:i:s", $timestamp);
+
+}
+
+/**
+  * om_playback_servers_princeton_feed_clean_string($string).
+  * Sanitizes string and adds XML escaping.
+  * @param $string string to be sanatized.
+  * @returns sanatized string
+  */
+
+function om_playback_servers_princeton_feed_clean_string($string) {
+  $string = htmlentities($string, HTML_ENTITIES, 'UTF-8');
+  $string = '<![CDATA[' . $string . ']]>';
+  return $string;
+}

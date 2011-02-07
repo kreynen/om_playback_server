@@ -1,0 +1,5 @@
+name = OM Playback Server Synergy
+description = Stores hooks for Synergy playback servers.
+package = Open Media System
+dependencies[] = om_playback_servers
+core = 6.x

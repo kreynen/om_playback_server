@@ -1,0 +1,5 @@
+; $Id: om_playback_servers.info,v 1.1 2010/10/18 18:17:44 lkacenja Exp $ 
+name = Open Media Playback Severs
+description = One module to register functions for all playback servers, and in the darkness bind them.
+package = Open Media System
+core = 6.x
